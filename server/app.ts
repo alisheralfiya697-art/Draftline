@@ -1,5 +1,6 @@
 import express, { type NextFunction, type Request, type Response } from 'express';
 import multer from 'multer';
+import { AuthService } from './auth.js';
 import {
   ImportValidationError,
   MAX_IMPORT_BYTES,
@@ -9,10 +10,21 @@ import { DocumentStore, StoreError } from './store.js';
 
 interface AuthenticatedRequest extends Request {
   activeUserId?: string;
+  tokenJti?: string;
+  tokenExp?: number;
 }
 
-export function createApiApp(store: DocumentStore) {
+export function createApiApp(
+  store: DocumentStore,
+  auth = new AuthService()
+) {
   const app = express();
+  app.disable('x-powered-by');
+  app.use((_req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    next();
+  });
   app.use(express.json({ limit: '2mb' }));
 
   const upload = multer({
@@ -23,20 +35,21 @@ export function createApiApp(store: DocumentStore) {
     },
   });
 
-  const requireUser = (
+  const requireAuth = (
     req: AuthenticatedRequest,
     res: Response,
     next: NextFunction
   ) => {
-    const rawUserId = req.header('x-user-id');
-    const userId = typeof rawUserId === 'string' ? rawUserId.trim() : '';
-    if (!userId || !store.getUserById(userId)) {
+    const verified = auth.verifyBearerToken(req.header('authorization'));
+    if (!verified) {
       res.status(401).json({
-        error: 'Valid X-User-Id header is required.',
+        error: 'Authentication required. Please sign in to continue.',
       });
       return;
     }
-    req.activeUserId = userId;
+    req.activeUserId = verified.user.id;
+    req.tokenJti = verified.jti;
+    req.tokenExp = verified.exp;
     next();
   };
 
@@ -44,16 +57,54 @@ export function createApiApp(store: DocumentStore) {
     res.json({ ok: true });
   });
 
-  app.get('/api/users', (_req, res) => {
+  app.get('/api/auth/demo-accounts', (_req, res) => {
+    res.json({
+      authMode: 'simulated-demo',
+      accounts: auth.listDemoAccounts(),
+    });
+  });
+
+  app.post('/api/auth/demo-login', (req, res, next) => {
+    try {
+      const { userId, email } = req.body ?? {};
+      if (
+        (typeof userId !== 'string' || !userId.trim()) &&
+        (typeof email !== 'string' || !email.trim())
+      ) {
+        throw new StoreError('Provide a demo userId or email to sign in.', 400);
+      }
+      const session = auth.issueDemoSession({ userId, email });
+      if (!session) {
+        throw new StoreError('Selected demo account was not found.', 404);
+      }
+      res.json(session);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.get('/api/auth/me', requireAuth, (req: AuthenticatedRequest, res) => {
+    const user = store.getUserById(req.activeUserId!);
+    res.json({ user });
+  });
+
+  app.post('/api/auth/logout', requireAuth, (req: AuthenticatedRequest, res) => {
+    if (req.tokenJti && req.tokenExp) {
+      auth.revokeToken(req.tokenJti, req.tokenExp);
+    }
+    res.status(204).send();
+  });
+
+  app.get('/api/users', requireAuth, (_req, res) => {
     res.json({ users: store.getUsers() });
   });
 
-  app.get('/api/documents', requireUser, (req: AuthenticatedRequest, res) => {
+  app.get('/api/documents', requireAuth, (req: AuthenticatedRequest, res) => {
     const documents = store.listForUser(req.activeUserId!);
     res.json({ documents });
   });
 
-  app.post('/api/documents', requireUser, (req: AuthenticatedRequest, res, next) => {
+  app.post('/api/documents', requireAuth, (req: AuthenticatedRequest, res, next) => {
     try {
       const { title, contentHtml } = req.body ?? {};
       const document = store.createDocument({
@@ -69,7 +120,7 @@ export function createApiApp(store: DocumentStore) {
 
   app.post(
     '/api/documents/import',
-    requireUser,
+    requireAuth,
     upload.single('file'),
     async (req: AuthenticatedRequest, res, next) => {
       try {
@@ -82,6 +133,7 @@ export function createApiApp(store: DocumentStore) {
         const parsed = await parseImportedFile({
           originalName: req.file.originalname,
           buffer: req.file.buffer,
+          mimeType: req.file.mimetype,
         });
 
         const overrideTitle =
@@ -103,7 +155,7 @@ export function createApiApp(store: DocumentStore) {
     }
   );
 
-  app.get('/api/documents/:id', requireUser, (req: AuthenticatedRequest, res, next) => {
+  app.get('/api/documents/:id', requireAuth, (req: AuthenticatedRequest, res, next) => {
     try {
       const document = store.getForUser(req.params.id, req.activeUserId!);
       res.json({ document });
@@ -112,7 +164,7 @@ export function createApiApp(store: DocumentStore) {
     }
   });
 
-  app.patch('/api/documents/:id', requireUser, (req: AuthenticatedRequest, res, next) => {
+  app.patch('/api/documents/:id', requireAuth, (req: AuthenticatedRequest, res, next) => {
     try {
       const { title, contentHtml } = req.body ?? {};
       if (title === undefined && contentHtml === undefined) {
@@ -133,7 +185,7 @@ export function createApiApp(store: DocumentStore) {
     }
   });
 
-  app.delete('/api/documents/:id', requireUser, (req: AuthenticatedRequest, res, next) => {
+  app.delete('/api/documents/:id', requireAuth, (req: AuthenticatedRequest, res, next) => {
     try {
       store.deleteDocument(req.params.id, req.activeUserId!);
       res.status(204).send();
@@ -144,7 +196,7 @@ export function createApiApp(store: DocumentStore) {
 
   app.put(
     '/api/documents/:id/shares',
-    requireUser,
+    requireAuth,
     (req: AuthenticatedRequest, res, next) => {
       try {
         const { userId, permission } = req.body ?? {};
@@ -166,7 +218,7 @@ export function createApiApp(store: DocumentStore) {
 
   app.delete(
     '/api/documents/:id/shares/:targetUserId',
-    requireUser,
+    requireAuth,
     (req: AuthenticatedRequest, res, next) => {
       try {
         const document = store.revokeShare({

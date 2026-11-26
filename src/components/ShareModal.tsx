@@ -10,6 +10,7 @@ import type {
 interface ShareModalProps {
   document: DocumentDTO;
   users: SeededUser[];
+  authToken: string;
   activeUserId: string;
   onClose: () => void;
   onUpdated: (updated: DocumentDTO) => void;
@@ -18,6 +19,7 @@ interface ShareModalProps {
 export function ShareModal({
   document,
   users,
+  authToken,
   activeUserId,
   onClose,
   onUpdated,
@@ -51,7 +53,7 @@ export function ShareModal({
     setSubmitting(true);
     try {
       const updated = await grantDocumentShare(
-        activeUserId,
+        authToken,
         document.id,
         currentCandidateId,
         permission
@@ -74,7 +76,7 @@ export function ShareModal({
     setBusyUserId(targetUserId);
     try {
       const updated = await grantDocumentShare(
-        activeUserId,
+        authToken,
         document.id,
         targetUserId,
         nextPermission
@@ -94,7 +96,7 @@ export function ShareModal({
     setBusyUserId(targetUserId);
     try {
       const updated = await revokeDocumentShare(
-        activeUserId,
+        authToken,
         document.id,
         targetUserId
       );

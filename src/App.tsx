@@ -1,14 +1,23 @@
 import { AlertTriangle, CheckCircle2, X } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  ApiError,
   createDocument,
   deleteDocument,
+  fetchDemoAccounts,
   fetchDocument,
   fetchDocuments,
   fetchUsers,
+  loginDemoAccount,
+  logoutSession,
   updateDocument,
+  type DemoSession,
 } from './api/client';
-import { DocumentEditor } from './components/DocumentEditor';
+import { DemoLoginView } from './components/DemoLoginView';
+import {
+  DocumentEditor,
+  type DocumentEditorHandle,
+} from './components/DocumentEditor';
 import { DocumentLibrary } from './components/DocumentLibrary';
 import { ImportModal } from './components/ImportModal';
 import { ProjectNotesView } from './components/ProjectNotesView';
@@ -20,39 +29,43 @@ import type {
   SeededUser,
 } from './types/document';
 
-function readUrlState(): { userId: string; docId: string | null } {
+function readDocParam(): string | null {
   const params = new URLSearchParams(window.location.search);
-  return {
-    userId: params.get('user') || 'user-maya',
-    docId: params.get('doc'),
-  };
+  return params.get('doc');
 }
 
-function writeUrlState(userId: string, docId: string | null) {
+function writeDocParam(docId: string | null) {
   const params = new URLSearchParams(window.location.search);
-  params.set('user', userId);
   if (docId) {
     params.set('doc', docId);
   } else {
     params.delete('doc');
   }
-  const next = `${window.location.pathname}?${params.toString()}`;
+  const query = params.toString();
+  const next = query ? `${window.location.pathname}?${query}` : window.location.pathname;
   window.history.replaceState(null, '', next);
 }
 
 export default function App() {
-  const initial = readUrlState();
+  const editorRef = useRef<DocumentEditorHandle | null>(null);
+  const [demoAccounts, setDemoAccounts] = useState<SeededUser[]>([]);
+  const [loadingAccounts, setLoadingAccounts] = useState(true);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [signingInId, setSigningInId] = useState<string | null>(null);
+  const [switchingUser, setSwitchingUser] = useState(false);
 
+  // Session token is kept strictly in React memory (never localStorage/sessionStorage)
+  const [session, setSession] = useState<DemoSession | null>(null);
   const [users, setUsers] = useState<SeededUser[]>([]);
-  const [activeUserId, setActiveUserId] = useState<string>(initial.userId);
+
   const [documents, setDocuments] = useState<DocumentDTO[]>([]);
-  const [loadingDocs, setLoadingDocs] = useState<boolean>(true);
+  const [loadingDocs, setLoadingDocs] = useState<boolean>(false);
   const [docsError, setDocsError] = useState<string | null>(null);
 
   const [activeSection, setActiveSection] = useState<DocumentFilter | 'notes'>(
     'all'
   );
-  const [openDocId, setOpenDocId] = useState<string | null>(initial.docId);
+  const [openDocId, setOpenDocId] = useState<string | null>(readDocParam);
   const [activeDocument, setActiveDocument] = useState<DocumentDTO | null>(null);
   const [loadingSingleDoc, setLoadingSingleDoc] = useState<boolean>(false);
 
@@ -80,63 +93,92 @@ export default function App() {
     return () => window.clearTimeout(id);
   }, [toast]);
 
-  // Load seeded users once
+  // Load available demo accounts for the login screen
   useEffect(() => {
-    fetchUsers()
-      .then((list) => {
-        setUsers(list);
-        if (list.length > 0 && !list.some((u) => u.id === activeUserId)) {
-          setActiveUserId(list[0].id);
-        }
+    setLoadingAccounts(true);
+    fetchDemoAccounts()
+      .then((accounts) => {
+        setDemoAccounts(accounts);
       })
       .catch((err) => {
-        setDocsError(
-          err instanceof Error ? err.message : 'Failed to load seeded users.'
+        setAuthError(
+          err instanceof Error
+            ? err.message
+            : 'Unable to load demo workspace accounts.'
         );
+      })
+      .finally(() => {
+        setLoadingAccounts(false);
       });
-  }, [activeUserId]);
-
-  // Load documents for active user
-  const loadDocuments = useCallback(async (userId: string) => {
-    setLoadingDocs(true);
-    setDocsError(null);
-    try {
-      const docs = await fetchDocuments(userId);
-      setDocuments(docs);
-    } catch (err) {
-      setDocsError(
-        err instanceof Error ? err.message : 'Failed to load documents.'
-      );
-    } finally {
-      setLoadingDocs(false);
-    }
   }, []);
 
-  useEffect(() => {
-    writeUrlState(activeUserId, openDocId);
-  }, [activeUserId, openDocId]);
+  const handleUnauthorized = useCallback(
+    (err: unknown): boolean => {
+      if (err instanceof ApiError && err.status === 401) {
+        setSession(null);
+        setActiveDocument(null);
+        setDocuments([]);
+        showToast('Session expired. Please sign in again.', 'error');
+        return true;
+      }
+      return false;
+    },
+    [showToast]
+  );
 
+  // Sync URL ?doc=... parameter
   useEffect(() => {
-    void loadDocuments(activeUserId);
-  }, [activeUserId, loadDocuments]);
+    writeDocParam(openDocId);
+  }, [openDocId]);
 
-  // Load specific document when openDocId changes
+  const loadWorkspace = useCallback(
+    async (token: string) => {
+      setLoadingDocs(true);
+      setDocsError(null);
+      try {
+        const [userList, docList] = await Promise.all([
+          fetchUsers(token),
+          fetchDocuments(token),
+        ]);
+        setUsers(userList);
+        setDocuments(docList);
+      } catch (err) {
+        if (!handleUnauthorized(err)) {
+          setDocsError(
+            err instanceof Error ? err.message : 'Failed to load documents.'
+          );
+        }
+      } finally {
+        setLoadingDocs(false);
+      }
+    },
+    [handleUnauthorized]
+  );
+
+  // Fetch workspace data whenever authenticated session changes
   useEffect(() => {
-    if (!openDocId) {
+    if (!session) return;
+    void loadWorkspace(session.token);
+  }, [session, loadWorkspace]);
+
+  // Load specific document when openDocId or session changes
+  useEffect(() => {
+    if (!session || !openDocId) {
       setActiveDocument(null);
       return;
     }
 
     let cancelled = false;
     setLoadingSingleDoc(true);
-    fetchDocument(activeUserId, openDocId)
+    fetchDocument(session.token, openDocId)
       .then((doc) => {
         if (!cancelled) {
           setActiveDocument(doc);
         }
       })
       .catch((err) => {
-        if (!cancelled) {
+        if (cancelled) return;
+        if (!handleUnauthorized(err)) {
           setOpenDocId(null);
           setActiveDocument(null);
           showToast(
@@ -154,29 +196,76 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [activeUserId, openDocId, showToast]);
+  }, [session, openDocId, handleUnauthorized, showToast]);
 
-  const activeUser =
-    users.find((u) => u.id === activeUserId) ?? users[0] ?? null;
+  const handleSignIn = async (userId: string) => {
+    setSigningInId(userId);
+    setAuthError(null);
+    try {
+      const nextSession = await loginDemoAccount(userId);
+      setSession(nextSession);
+      showToast(`Signed in as ${nextSession.user.name}`);
+    } catch (err) {
+      setAuthError(
+        err instanceof Error ? err.message : 'Unable to sign in.'
+      );
+    } finally {
+      setSigningInId(null);
+    }
+  };
 
-  const handleSelectSection = (section: DocumentFilter | 'notes') => {
+  const handleSwitchUser = async (nextUserId: string) => {
+    if (!session) return;
+    if (editorRef.current) {
+      await editorRef.current.flushPendingSave();
+    }
+    setSwitchingUser(true);
+    const previousToken = session.token;
+    try {
+      const nextSession = await loginDemoAccount(nextUserId);
+      setSession(nextSession);
+      void logoutSession(previousToken).catch(() => {});
+      showToast(`Signed in as ${nextSession.user.name}`);
+    } catch (err) {
+      showToast(
+        err instanceof Error ? err.message : 'Could not switch account.',
+        'error'
+      );
+    } finally {
+      setSwitchingUser(false);
+    }
+  };
+
+  const handleSignOut = async () => {
+    if (editorRef.current) {
+      await editorRef.current.flushPendingSave();
+    }
+    const token = session?.token;
+    setSession(null);
+    setActiveDocument(null);
+    setDocuments([]);
+    setShareTarget(null);
+    setDeleteTarget(null);
+    setImportOpen(false);
+    if (token) {
+      void logoutSession(token).catch(() => {});
+    }
+  };
+
+  const handleSelectSection = async (section: DocumentFilter | 'notes') => {
+    if (editorRef.current) {
+      await editorRef.current.flushPendingSave();
+    }
     setOpenDocId(null);
     setActiveDocument(null);
     setActiveSection(section);
   };
 
-  const handleSwitchUser = (nextUserId: string) => {
-    setActiveUserId(nextUserId);
-    const nextUser = users.find((u) => u.id === nextUserId);
-    if (nextUser) {
-      showToast(`Switched account to ${nextUser.name}`);
-    }
-  };
-
   const handleCreateDocument = async () => {
+    if (!session) return;
     setCreating(true);
     try {
-      const doc = await createDocument(activeUserId, {
+      const doc = await createDocument(session.token, {
         title: 'Untitled Document',
         contentHtml: '<p></p>',
       });
@@ -185,24 +274,34 @@ export default function App() {
       setOpenDocId(doc.id);
       setActiveDocument(doc);
     } catch (err) {
-      showToast(
-        err instanceof Error ? err.message : 'Could not create document.',
-        'error'
-      );
+      if (!handleUnauthorized(err)) {
+        showToast(
+          err instanceof Error ? err.message : 'Could not create document.',
+          'error'
+        );
+      }
     } finally {
       setCreating(false);
     }
   };
 
   const handleRenameDocument = async (docId: string, nextTitle: string) => {
-    const updated = await updateDocument(activeUserId, docId, {
-      title: nextTitle,
-    });
-    setDocuments((prev) => prev.map((d) => (d.id === updated.id ? updated : d)));
-    if (activeDocument?.id === updated.id) {
-      setActiveDocument(updated);
+    if (!session) return;
+    try {
+      const updated = await updateDocument(session.token, docId, {
+        title: nextTitle,
+      });
+      setDocuments((prev) =>
+        prev.map((d) => (d.id === updated.id ? updated : d))
+      );
+      if (activeDocument?.id === updated.id) {
+        setActiveDocument(updated);
+      }
+      showToast('Document renamed');
+    } catch (err) {
+      handleUnauthorized(err);
+      throw err;
     }
-    showToast('Document renamed');
   };
 
   const handleDocumentUpdated = useCallback((updated: DocumentDTO) => {
@@ -221,10 +320,10 @@ export default function App() {
   }, []);
 
   const handleConfirmDelete = async () => {
-    if (!deleteTarget) return;
+    if (!deleteTarget || !session) return;
     setDeleting(true);
     try {
-      await deleteDocument(activeUserId, deleteTarget.id);
+      await deleteDocument(session.token, deleteTarget.id);
       setDocuments((prev) => prev.filter((d) => d.id !== deleteTarget.id));
       if (openDocId === deleteTarget.id) {
         setOpenDocId(null);
@@ -233,23 +332,67 @@ export default function App() {
       showToast(`Deleted "${deleteTarget.title}"`);
       setDeleteTarget(null);
     } catch (err) {
-      showToast(
-        err instanceof Error ? err.message : 'Could not delete document.',
-        'error'
-      );
+      if (!handleUnauthorized(err)) {
+        showToast(
+          err instanceof Error ? err.message : 'Could not delete document.',
+          'error'
+        );
+      }
     } finally {
       setDeleting(false);
     }
   };
+
+  if (!session) {
+    return (
+      <>
+        <DemoLoginView
+          accounts={demoAccounts}
+          loading={loadingAccounts}
+          signingInId={signingInId}
+          error={authError}
+          onSignIn={handleSignIn}
+        />
+        {toast && (
+          <div
+            role="status"
+            aria-live="polite"
+            className={`fixed bottom-5 right-5 z-50 max-w-sm px-4 py-3 rounded-xl border shadow-lg flex items-center gap-2.5 text-sm ${
+              toast.type === 'error'
+                ? 'bg-red-50 border-red-200 text-red-800'
+                : 'bg-white border-slate-200 text-slate-800'
+            }`}
+          >
+            {toast.type === 'error' ? (
+              <AlertTriangle className="w-4 h-4 text-red-600 shrink-0" />
+            ) : (
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            )}
+            <span className="flex-1">{toast.message}</span>
+            <button
+              type="button"
+              onClick={() => setToast(null)}
+              aria-label="Dismiss notification"
+              className="p-1 rounded text-slate-400 hover:text-slate-700 cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+      </>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
       <TopBar
         activeSection={activeSection}
         onSelectSection={handleSelectSection}
-        users={users}
-        activeUser={activeUser}
+        users={users.length > 0 ? users : demoAccounts}
+        activeUser={session.user}
         onSwitchUser={handleSwitchUser}
+        onSignOut={handleSignOut}
+        switchingUser={switchingUser}
       />
 
       {openDocId ? (
@@ -264,12 +407,14 @@ export default function App() {
           </div>
         ) : activeDocument ? (
           <DocumentEditor
+            ref={editorRef}
             document={activeDocument}
-            activeUserId={activeUserId}
+            authToken={session.token}
+            activeUserId={session.user.id}
             onBack={() => {
               setOpenDocId(null);
               setActiveDocument(null);
-              void loadDocuments(activeUserId);
+              void loadWorkspace(session.token);
             }}
             onUpdated={handleDocumentUpdated}
             onOpenShare={(doc) => setShareTarget(doc)}
@@ -297,10 +442,9 @@ export default function App() {
         />
       )}
 
-      {/* Import File Modal */}
       {importOpen && (
         <ImportModal
-          activeUserId={activeUserId}
+          authToken={session.token}
           onClose={() => setImportOpen(false)}
           onImported={(doc) => {
             setImportOpen(false);
@@ -313,18 +457,17 @@ export default function App() {
         />
       )}
 
-      {/* Share Modal */}
       {shareTarget && (
         <ShareModal
           document={shareTarget}
-          users={users}
-          activeUserId={activeUserId}
+          users={users.length > 0 ? users : demoAccounts}
+          authToken={session.token}
+          activeUserId={session.user.id}
           onClose={() => setShareTarget(null)}
           onUpdated={handleDocumentUpdated}
         />
       )}
 
-      {/* Delete Confirmation Modal */}
       {deleteTarget && (
         <div
           className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-[1px] flex items-center justify-center p-4"
@@ -371,7 +514,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Toast Notification */}
       {toast && (
         <div
           role="status"

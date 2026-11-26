@@ -2,16 +2,17 @@ import 'dotenv/config';
 import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { createApiApp } from './server/app.js';
-import { DocumentStore } from './server/store.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import { AuthService } from './server/auth.js';
+import { DocumentStore, resolveDataDir } from './server/store.js';
 
 async function startServer() {
-  const store = new DocumentStore(path.resolve(__dirname, 'data', 'documents.json'));
-  const app = createApiApp(store);
+  const dataDir = resolveDataDir();
+  const dbPath = path.join(dataDir, 'draftline.db');
+  const store = new DocumentStore(dbPath);
+  const auth = new AuthService();
+  const app = createApiApp(store, auth);
+
   const port = Number(process.env.PORT) || 3000;
   const isProd = process.env.NODE_ENV === 'production';
 
@@ -23,7 +24,7 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    const distDir = path.resolve(__dirname, 'dist');
+    const distDir = path.resolve(import.meta.dirname, 'dist');
     app.use(express.static(distDir));
     app.get('*', (_req, res) => {
       const indexHtml = path.join(distDir, 'index.html');
@@ -35,9 +36,20 @@ async function startServer() {
     });
   }
 
-  app.listen(port, '0.0.0.0', () => {
-    console.log(`Draftline server running at http://localhost:${port}`);
+  const server = app.listen(port, '0.0.0.0', () => {
+    console.log(
+      `Draftline server running at http://localhost:${port} (db: ${dbPath})`
+    );
   });
+
+  const shutdown = () => {
+    server.close(() => {
+      store.close();
+      process.exit(0);
+    });
+  };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
 }
 
 startServer().catch((err) => {

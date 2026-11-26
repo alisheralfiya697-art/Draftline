@@ -4,7 +4,7 @@ import { importDocumentFile } from '../api/client';
 import type { DocumentDTO } from '../types/document';
 
 interface ImportModalProps {
-  activeUserId: string;
+  authToken: string;
   onClose: () => void;
   onImported: (document: DocumentDTO) => void;
 }
@@ -13,7 +13,7 @@ const ACCEPTED_EXTENSIONS = ['.txt', '.md', '.docx'];
 const MAX_SIZE_BYTES = 5 * 1024 * 1024;
 
 export function ImportModal({
-  activeUserId,
+  authToken,
   onClose,
   onImported,
 }: ImportModalProps) {
@@ -68,7 +68,7 @@ export function ImportModal({
     setUploading(true);
     try {
       const doc = await importDocumentFile(
-        activeUserId,
+        authToken,
         selectedFile,
         customTitle
       );

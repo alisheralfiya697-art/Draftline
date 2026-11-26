@@ -1,4 +1,4 @@
-import { Check, ChevronDown } from 'lucide-react';
+import { Check, ChevronDown, LogOut } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { DocumentFilter, SeededUser } from '../types/document';
 
@@ -6,8 +6,10 @@ interface TopBarProps {
   activeSection: DocumentFilter | 'notes';
   onSelectSection: (section: DocumentFilter | 'notes') => void;
   users: SeededUser[];
-  activeUser: SeededUser | null;
+  activeUser: SeededUser;
   onSwitchUser: (userId: string) => void;
+  onSignOut: () => void;
+  switchingUser: boolean;
 }
 
 export function TopBar({
@@ -16,6 +18,8 @@ export function TopBar({
   users,
   activeUser,
   onSwitchUser,
+  onSignOut,
+  switchingUser,
 }: TopBarProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement | null>(null);
@@ -83,37 +87,36 @@ export function TopBar({
           })}
         </nav>
 
-        {/* Zone 3: Active seeded user switcher */}
+        {/* Zone 3: Authenticated demo account menu */}
         <div className="relative shrink-0" ref={dropdownRef}>
           <button
             type="button"
+            disabled={switchingUser}
             onClick={() => setMenuOpen((prev) => !prev)}
             aria-expanded={menuOpen}
             aria-haspopup="listbox"
-            className="flex items-center gap-2.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-sm font-medium text-slate-800 transition-colors whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
+            className="flex items-center gap-2.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-sm font-medium text-slate-800 transition-colors whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 disabled:opacity-60"
           >
             <span className="w-6 h-6 rounded-md bg-blue-600 text-white text-xs font-semibold flex items-center justify-center shrink-0">
-              {activeUser?.initials ?? 'ML'}
+              {activeUser.initials}
             </span>
-            <span className="max-w-[140px] truncate">
-              {activeUser?.name ?? 'Select user'}
-            </span>
+            <span className="max-w-[140px] truncate">{activeUser.name}</span>
             <ChevronDown className="w-4 h-4 text-slate-400 shrink-0" />
           </button>
 
           {menuOpen && (
             <div
               role="listbox"
-              aria-label="Switch active seeded user"
+              aria-label="Switch demo account"
               className="absolute right-0 mt-2 w-72 bg-white border border-slate-200 rounded-xl shadow-lg py-1.5 z-50"
             >
               <div className="px-3.5 py-2 border-b border-slate-100">
                 <p className="text-xs font-medium text-slate-500">
-                  Switch active account
+                  Switch demo session
                 </p>
               </div>
               {users.map((user) => {
-                const selected = user.id === activeUser?.id;
+                const selected = user.id === activeUser.id;
                 return (
                   <button
                     key={user.id}
@@ -121,7 +124,9 @@ export function TopBar({
                     role="option"
                     aria-selected={selected}
                     onClick={() => {
-                      onSwitchUser(user.id);
+                      if (!selected) {
+                        onSwitchUser(user.id);
+                      }
                       setMenuOpen(false);
                     }}
                     className={`w-full px-3.5 py-2.5 flex items-center justify-between gap-3 text-left transition-colors cursor-pointer ${
@@ -153,6 +158,20 @@ export function TopBar({
                   </button>
                 );
               })}
+
+              <div className="mt-1 pt-1 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    onSignOut();
+                  }}
+                  className="w-full px-3.5 py-2 flex items-center gap-2 text-xs font-medium text-slate-600 hover:text-red-600 hover:bg-red-50/60 transition-colors cursor-pointer"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  <span>Sign out</span>
+                </button>
+              </div>
             </div>
           )}
         </div>

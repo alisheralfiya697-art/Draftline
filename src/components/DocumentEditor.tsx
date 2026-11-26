@@ -21,12 +21,25 @@ import {
   Underline as UnderlineIcon,
   Undo2,
 } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+  type Ref,
+} from 'react';
 import { updateDocument } from '../api/client';
 import type { DocumentDTO } from '../types/document';
 
+export interface DocumentEditorHandle {
+  flushPendingSave: () => Promise<boolean>;
+}
+
 interface DocumentEditorProps {
+  ref?: Ref<DocumentEditorHandle>;
   document: DocumentDTO;
+  authToken: string;
   activeUserId: string;
   onBack: () => void;
   onUpdated: (updated: DocumentDTO) => void;
@@ -37,7 +50,9 @@ interface DocumentEditorProps {
 type SaveStatus = 'saved' | 'unsaved' | 'saving' | 'error';
 
 export function DocumentEditor({
+  ref,
   document,
+  authToken,
   activeUserId,
   onBack,
   onUpdated,
@@ -52,16 +67,168 @@ export function DocumentEditor({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [wordCount, setWordCount] = useState(document.wordCount);
 
-  const lastSavedHtmlRef = useRef(document.contentHtml);
-  const lastSavedTitleRef = useRef(document.title);
-  const debounceTimerRef = useRef<number | null>(null);
+  // Refs prevent stale closures and serialize concurrent/overlapping saves
   const docIdRef = useRef(document.id);
+  const authTokenRef = useRef(authToken);
+  const activeUserIdRef = useRef(activeUserId);
+  const canEditRef = useRef(canEdit);
+  const latestTitleRef = useRef(document.title);
+  const latestHtmlRef = useRef(document.contentHtml);
+  const lastSavedTitleRef = useRef(document.title);
+  const lastSavedHtmlRef = useRef(document.contentHtml);
+  const debounceTimerRef = useRef<number | null>(null);
+  const inFlightSaveRef = useRef<Promise<boolean> | null>(null);
+  const mountedRef = useRef(true);
+
+  authTokenRef.current = authToken;
+  activeUserIdRef.current = activeUserId;
+  canEditRef.current = canEdit;
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (debounceTimerRef.current) {
+        window.clearTimeout(debounceTimerRef.current);
+      }
+    };
+  }, []);
 
   const computeWords = (text: string): number => {
     const trimmed = text.trim();
     if (!trimmed) return 0;
     return trimmed.split(/\s+/).filter(Boolean).length;
   };
+
+  const runSerializedSave = useCallback(async (): Promise<boolean> => {
+    if (!canEditRef.current) return true;
+
+    // If a save is already running, wait for it and then evaluate remaining dirty state
+    if (inFlightSaveRef.current) {
+      await inFlightSaveRef.current;
+    }
+
+    const targetDocId = docIdRef.current;
+    const targetToken = authTokenRef.current;
+    const targetUserId = activeUserIdRef.current;
+    const nextTitleRaw = latestTitleRef.current;
+    const nextHtml = latestHtmlRef.current;
+    const trimmedTitle = nextTitleRaw.trim();
+
+    if (!trimmedTitle) {
+      if (mountedRef.current) {
+        setTitleError('Document title cannot be empty.');
+        setSaveStatus('error');
+      }
+      return false;
+    }
+
+    const titleChanged = trimmedTitle !== lastSavedTitleRef.current;
+    const htmlChanged = nextHtml !== lastSavedHtmlRef.current;
+
+    if (!titleChanged && !htmlChanged) {
+      if (mountedRef.current) {
+        setTitleError(null);
+        setSaveError(null);
+        setSaveStatus('saved');
+      }
+      return true;
+    }
+
+    if (mountedRef.current) {
+      setSaveStatus('saving');
+      setSaveError(null);
+      setTitleError(null);
+    }
+
+    let savePromise: Promise<boolean> | null = null;
+    savePromise = (async (): Promise<boolean> => {
+      try {
+        const payload: { title?: string; contentHtml?: string } = {};
+        if (titleChanged) payload.title = trimmedTitle;
+        if (htmlChanged) payload.contentHtml = nextHtml;
+
+        const updated = await updateDocument(targetToken, targetDocId, payload);
+
+        // Ignore response if user already switched documents or accounts while saving
+        if (
+          !mountedRef.current ||
+          docIdRef.current !== targetDocId ||
+          activeUserIdRef.current !== targetUserId
+        ) {
+          onUpdated(updated);
+          return true;
+        }
+
+        lastSavedTitleRef.current = updated.title;
+        lastSavedHtmlRef.current = updated.contentHtml;
+        setWordCount(updated.wordCount);
+        onUpdated(updated);
+
+        // Only mark 'saved' if no newer local edits occurred while request was in flight
+        const stillDirtyTitle =
+          latestTitleRef.current.trim() !== updated.title;
+        const stillDirtyHtml = latestHtmlRef.current !== nextHtml;
+
+        if (stillDirtyTitle || stillDirtyHtml) {
+          setSaveStatus('unsaved');
+          if (debounceTimerRef.current) {
+            window.clearTimeout(debounceTimerRef.current);
+          }
+          debounceTimerRef.current = window.setTimeout(() => {
+            void runSerializedSave();
+          }, 400);
+          return false;
+        }
+
+        setTitle(updated.title);
+        latestTitleRef.current = updated.title;
+        setSaveStatus('saved');
+        return true;
+      } catch (err) {
+        if (mountedRef.current && docIdRef.current === targetDocId) {
+          setSaveStatus('error');
+          setSaveError(
+            err instanceof Error ? err.message : 'Failed to save changes.'
+          );
+        }
+        return false;
+      } finally {
+        if (inFlightSaveRef.current === savePromise) {
+          inFlightSaveRef.current = null;
+        }
+      }
+    })();
+
+    inFlightSaveRef.current = savePromise;
+    return savePromise;
+  }, [onUpdated]);
+
+  const scheduleAutosave = useCallback(() => {
+    if (!canEditRef.current) return;
+    if (debounceTimerRef.current) {
+      window.clearTimeout(debounceTimerRef.current);
+    }
+    debounceTimerRef.current = window.setTimeout(() => {
+      void runSerializedSave();
+    }, 1200);
+  }, [runSerializedSave]);
+
+  const flushPendingSave = useCallback(async (): Promise<boolean> => {
+    if (debounceTimerRef.current) {
+      window.clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
+    }
+    return runSerializedSave();
+  }, [runSerializedSave]);
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      flushPendingSave,
+    }),
+    [flushPendingSave]
+  );
 
   const editor = useEditor(
     {
@@ -78,134 +245,91 @@ export function DocumentEditor({
       editable: canEdit,
       onUpdate: ({ editor: ed }) => {
         const html = ed.getHTML();
+        latestHtmlRef.current = html;
         setWordCount(computeWords(ed.getText()));
         if (html !== lastSavedHtmlRef.current) {
           setSaveStatus('unsaved');
-          if (debounceTimerRef.current) {
-            window.clearTimeout(debounceTimerRef.current);
-          }
-          debounceTimerRef.current = window.setTimeout(() => {
-            void persistChanges(title, html);
-          }, 1200);
+          scheduleAutosave();
         }
       },
     },
-    [document.id, canEdit]
+    [document.id, canEdit, activeUserId]
   );
 
-  const persistChanges = useCallback(
-    async (nextTitle: string, nextHtml: string) => {
-      if (!canEdit) return;
-      const trimmedTitle = nextTitle.trim();
-      if (!trimmedTitle) {
-        setTitleError('Document title cannot be empty.');
-        setSaveStatus('error');
-        return;
-      }
-
-      const titleChanged = trimmedTitle !== lastSavedTitleRef.current;
-      const htmlChanged = nextHtml !== lastSavedHtmlRef.current;
-      if (!titleChanged && !htmlChanged) {
-        setSaveStatus('saved');
-        return;
-      }
-
-      setSaveStatus('saving');
-      setSaveError(null);
-      setTitleError(null);
-
-      try {
-        const payload: { title?: string; contentHtml?: string } = {};
-        if (titleChanged) payload.title = trimmedTitle;
-        if (htmlChanged) payload.contentHtml = nextHtml;
-
-        const updated = await updateDocument(
-          activeUserId,
-          docIdRef.current,
-          payload
-        );
-        lastSavedTitleRef.current = updated.title;
-        lastSavedHtmlRef.current = updated.contentHtml;
-        setTitle(updated.title);
-        setWordCount(updated.wordCount);
-        setSaveStatus('saved');
-        onUpdated(updated);
-      } catch (err) {
-        setSaveStatus('error');
-        setSaveError(
-          err instanceof Error ? err.message : 'Failed to save changes.'
-        );
-      }
-    },
-    [activeUserId, canEdit, onUpdated]
-  );
-
-  // Sync when switching documents or external metadata changes (e.g. share modal)
+  // Reset editor local baseline ONLY when switching documents, user sessions, or editability
   useEffect(() => {
+    if (debounceTimerRef.current) {
+      window.clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
+    }
     docIdRef.current = document.id;
     setTitle(document.title);
+    latestTitleRef.current = document.title;
+    latestHtmlRef.current = document.contentHtml;
+    lastSavedTitleRef.current = document.title;
+    lastSavedHtmlRef.current = document.contentHtml;
     setWordCount(document.wordCount);
     setTitleError(null);
     setSaveError(null);
-    lastSavedTitleRef.current = document.title;
-    lastSavedHtmlRef.current = document.contentHtml;
     setSaveStatus('saved');
-  }, [document.id, document.title, document.contentHtml, document.wordCount]);
-
-  useEffect(() => {
-    return () => {
-      if (debounceTimerRef.current) {
-        window.clearTimeout(debounceTimerRef.current);
-      }
-    };
-  }, []);
+  }, [document.id, activeUserId, canEdit]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Cmd/Ctrl + S shortcut
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
         e.preventDefault();
-        if (canEdit && editor) {
-          if (debounceTimerRef.current) {
-            window.clearTimeout(debounceTimerRef.current);
-          }
-          void persistChanges(title, editor.getHTML());
+        if (canEditRef.current) {
+          void flushPendingSave();
         }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [canEdit, editor, persistChanges, title]);
+  }, [flushPendingSave]);
 
-  const handleTitleBlur = () => {
-    if (!canEdit || !editor) return;
-    const trimmed = title.trim();
-    if (!trimmed) {
+  const handleTitleChange = (nextTitle: string) => {
+    setTitle(nextTitle);
+    latestTitleRef.current = nextTitle;
+    if (!nextTitle.trim()) {
       setTitleError('Document title cannot be empty.');
+      setSaveStatus('error');
+      if (debounceTimerRef.current) {
+        window.clearTimeout(debounceTimerRef.current);
+      }
       return;
     }
-    if (trimmed !== lastSavedTitleRef.current) {
-      void persistChanges(trimmed, editor.getHTML());
+    setTitleError(null);
+    if (nextTitle.trim() !== lastSavedTitleRef.current) {
+      setSaveStatus('unsaved');
+      scheduleAutosave();
+    } else if (latestHtmlRef.current === lastSavedHtmlRef.current) {
+      setSaveStatus('saved');
     }
   };
 
-  const handleManualSave = () => {
-    if (!canEdit || !editor) return;
-    if (debounceTimerRef.current) {
-      window.clearTimeout(debounceTimerRef.current);
+  const handleTitleBlur = () => {
+    if (!canEditRef.current) return;
+    if (!latestTitleRef.current.trim()) {
+      setTitleError('Document title cannot be empty.');
+      setSaveStatus('error');
+      return;
     }
-    void persistChanges(title, editor.getHTML());
+    if (latestTitleRef.current.trim() !== lastSavedTitleRef.current) {
+      void flushPendingSave();
+    }
   };
 
   const handleBack = async () => {
-    if (debounceTimerRef.current) {
-      window.clearTimeout(debounceTimerRef.current);
-    }
-    if (canEdit && editor && saveStatus === 'unsaved' && title.trim()) {
-      await persistChanges(title, editor.getHTML());
-    }
+    await flushPendingSave();
     onBack();
   };
+
+  const roleLabel = document.isOwner
+    ? 'Owner'
+    : document.accessRole === 'editor'
+    ? 'Editor'
+    : 'Viewer';
 
   const toolbarBtnClass = (active = false) =>
     `h-8 px-2.5 rounded-md inline-flex items-center justify-center gap-1.5 text-xs font-medium transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
@@ -237,11 +361,7 @@ export function DocumentEditor({
                     value={title}
                     maxLength={160}
                     aria-label="Document title"
-                    onChange={(e) => {
-                      setTitle(e.target.value);
-                      if (e.target.value.trim()) setTitleError(null);
-                      setSaveStatus('unsaved');
-                    }}
+                    onChange={(e) => handleTitleChange(e.target.value)}
                     onBlur={handleTitleBlur}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter') {
@@ -264,15 +384,26 @@ export function DocumentEditor({
                 </h1>
               )}
 
-              <p className="text-xs text-slate-500 mt-0.5 truncate">
-                {document.isOwner
-                  ? 'Owned by you'
-                  : `Shared by ${document.owner.name} · ${
-                      document.accessRole === 'editor' ? 'Can edit' : 'View only'
-                    }`}
-                {document.sourceFormat !== 'native' &&
-                  ` · Imported .${document.sourceFormat}`}
-              </p>
+              <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 mt-0.5">
+                <span
+                  className={`inline-flex items-center px-1.5 py-0.5 rounded border text-[11px] font-medium ${
+                    document.isOwner
+                      ? 'border-slate-300 bg-slate-100 text-slate-800'
+                      : document.accessRole === 'editor'
+                      ? 'border-blue-200 bg-blue-50 text-blue-700'
+                      : 'border-amber-200 bg-amber-50 text-amber-800'
+                  }`}
+                >
+                  {roleLabel}
+                </span>
+                <span className="truncate">
+                  {document.isOwner
+                    ? 'Owned by you'
+                    : `Shared by ${document.owner.name}`}
+                  {document.sourceFormat !== 'native' &&
+                    ` · Imported .${document.sourceFormat}`}
+                </span>
+              </div>
             </div>
           </div>
 
@@ -280,7 +411,10 @@ export function DocumentEditor({
           <div className="flex flex-wrap items-center gap-2 shrink-0">
             {canEdit && (
               <>
-                <span className="text-xs text-slate-500 mr-1 inline-flex items-center gap-1 whitespace-nowrap tabular-nums">
+                <span
+                  aria-live="polite"
+                  className="text-xs text-slate-500 mr-1 inline-flex items-center gap-1 whitespace-nowrap tabular-nums"
+                >
                   {saveStatus === 'saving' && 'Saving...'}
                   {saveStatus === 'unsaved' && 'Unsaved changes'}
                   {saveStatus === 'saved' && (
@@ -290,14 +424,17 @@ export function DocumentEditor({
                     </>
                   )}
                   {saveStatus === 'error' && (
-                    <span className="text-red-600">Save failed</span>
+                    <span className="text-red-600 font-medium">Save failed</span>
                   )}
                 </span>
 
                 <button
                   type="button"
-                  onClick={handleManualSave}
-                  disabled={saveStatus === 'saving' || saveStatus === 'saved'}
+                  onClick={() => void flushPendingSave()}
+                  disabled={
+                    saveStatus === 'saving' ||
+                    (saveStatus === 'saved' && !titleError)
+                  }
                   className="h-9 px-3.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 disabled:opacity-50 text-xs font-medium text-slate-800 inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors cursor-pointer"
                 >
                   <Save className="w-3.5 h-3.5" />
@@ -542,7 +679,7 @@ export function DocumentEditor({
             </div>
           )}
 
-          <div className="bg-white border border-slate-200 rounded-xl shadow-xs px-8 sm:px-14 py-10 sm:py-12 min-h-[820px]">
+          <div className="bg-white border border-slate-200 rounded-xl shadow-xs px-6 sm:px-14 py-8 sm:py-12 min-h-[820px]">
             <EditorContent editor={editor} />
           </div>
         </div>

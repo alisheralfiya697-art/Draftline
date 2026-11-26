@@ -13,6 +13,12 @@ export class ApiError extends Error {
   }
 }
 
+export interface DemoSession {
+  token: string;
+  user: SeededUser;
+  expiresInSeconds: number;
+}
+
 async function parseResponse<T>(res: Response): Promise<T> {
   if (res.status === 204) {
     return undefined as T;
@@ -42,40 +48,71 @@ async function parseResponse<T>(res: Response): Promise<T> {
   return data as T;
 }
 
-export async function fetchUsers(): Promise<SeededUser[]> {
-  const res = await fetch('/api/users');
+function authHeaders(token: string): Record<string, string> {
+  return {
+    Authorization: `Bearer ${token}`,
+  };
+}
+
+export async function fetchDemoAccounts(): Promise<SeededUser[]> {
+  const res = await fetch('/api/auth/demo-accounts');
+  const data = await parseResponse<{ accounts: SeededUser[] }>(res);
+  return data.accounts;
+}
+
+export async function loginDemoAccount(userId: string): Promise<DemoSession> {
+  const res = await fetch('/api/auth/demo-login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ userId }),
+  });
+  return parseResponse<DemoSession>(res);
+}
+
+export async function logoutSession(token: string): Promise<void> {
+  const res = await fetch('/api/auth/logout', {
+    method: 'POST',
+    headers: authHeaders(token),
+  });
+  await parseResponse<void>(res);
+}
+
+export async function fetchUsers(token: string): Promise<SeededUser[]> {
+  const res = await fetch('/api/users', {
+    headers: authHeaders(token),
+  });
   const data = await parseResponse<{ users: SeededUser[] }>(res);
   return data.users;
 }
 
-export async function fetchDocuments(userId: string): Promise<DocumentDTO[]> {
+export async function fetchDocuments(token: string): Promise<DocumentDTO[]> {
   const res = await fetch('/api/documents', {
-    headers: { 'X-User-Id': userId },
+    headers: authHeaders(token),
   });
   const data = await parseResponse<{ documents: DocumentDTO[] }>(res);
   return data.documents;
 }
 
 export async function fetchDocument(
-  userId: string,
+  token: string,
   docId: string
 ): Promise<DocumentDTO> {
   const res = await fetch(`/api/documents/${encodeURIComponent(docId)}`, {
-    headers: { 'X-User-Id': userId },
+    headers: authHeaders(token),
   });
   const data = await parseResponse<{ document: DocumentDTO }>(res);
   return data.document;
 }
 
 export async function createDocument(
-  userId: string,
+  token: string,
   payload?: { title?: string; contentHtml?: string }
 ): Promise<DocumentDTO> {
   const res = await fetch('/api/documents', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'X-User-Id': userId,
+      ...authHeaders(token),
     },
     body: JSON.stringify(payload ?? {}),
   });
@@ -84,7 +121,7 @@ export async function createDocument(
 }
 
 export async function updateDocument(
-  userId: string,
+  token: string,
   docId: string,
   payload: { title?: string; contentHtml?: string }
 ): Promise<DocumentDTO> {
@@ -92,7 +129,7 @@ export async function updateDocument(
     method: 'PATCH',
     headers: {
       'Content-Type': 'application/json',
-      'X-User-Id': userId,
+      ...authHeaders(token),
     },
     body: JSON.stringify(payload),
   });
@@ -101,18 +138,18 @@ export async function updateDocument(
 }
 
 export async function deleteDocument(
-  userId: string,
+  token: string,
   docId: string
 ): Promise<void> {
   const res = await fetch(`/api/documents/${encodeURIComponent(docId)}`, {
     method: 'DELETE',
-    headers: { 'X-User-Id': userId },
+    headers: authHeaders(token),
   });
   await parseResponse<void>(res);
 }
 
 export async function importDocumentFile(
-  userId: string,
+  token: string,
   file: File,
   customTitle?: string
 ): Promise<DocumentDTO> {
@@ -124,7 +161,7 @@ export async function importDocumentFile(
 
   const res = await fetch('/api/documents/import', {
     method: 'POST',
-    headers: { 'X-User-Id': userId },
+    headers: authHeaders(token),
     body: formData,
   });
   const data = await parseResponse<{ document: DocumentDTO }>(res);
@@ -132,7 +169,7 @@ export async function importDocumentFile(
 }
 
 export async function grantDocumentShare(
-  userId: string,
+  token: string,
   docId: string,
   targetUserId: string,
   permission: SharePermission
@@ -141,7 +178,7 @@ export async function grantDocumentShare(
     method: 'PUT',
     headers: {
       'Content-Type': 'application/json',
-      'X-User-Id': userId,
+      ...authHeaders(token),
     },
     body: JSON.stringify({ userId: targetUserId, permission }),
   });
@@ -150,7 +187,7 @@ export async function grantDocumentShare(
 }
 
 export async function revokeDocumentShare(
-  userId: string,
+  token: string,
   docId: string,
   targetUserId: string
 ): Promise<DocumentDTO> {
@@ -158,7 +195,7 @@ export async function revokeDocumentShare(
     `/api/documents/${encodeURIComponent(docId)}/shares/${encodeURIComponent(targetUserId)}`,
     {
       method: 'DELETE',
-      headers: { 'X-User-Id': userId },
+      headers: authHeaders(token),
     }
   );
   const data = await parseResponse<{ document: DocumentDTO }>(res);

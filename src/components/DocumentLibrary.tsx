@@ -1,5 +1,6 @@
 import {
   Check,
+  Clock,
   FileText,
   Pencil,
   Plus,
@@ -42,6 +43,28 @@ function formatRelativeDate(iso: string): string {
   });
 }
 
+function RoleTag({ doc }: { doc: DocumentDTO }) {
+  if (doc.isOwner) {
+    return (
+      <span className="inline-flex items-center px-1.5 py-0.5 rounded border border-slate-300 bg-slate-100 text-[11px] font-medium text-slate-800 whitespace-nowrap">
+        Owner
+      </span>
+    );
+  }
+  if (doc.accessRole === 'editor') {
+    return (
+      <span className="inline-flex items-center px-1.5 py-0.5 rounded border border-blue-200 bg-blue-50 text-[11px] font-medium text-blue-700 whitespace-nowrap">
+        Editor
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center px-1.5 py-0.5 rounded border border-amber-200 bg-amber-50 text-[11px] font-medium text-amber-800 whitespace-nowrap">
+      Viewer
+    </span>
+  );
+}
+
 export function DocumentLibrary({
   documents,
   loading,
@@ -77,6 +100,10 @@ export function DocumentLibrary({
     }
     return true;
   });
+
+  const recentDocuments = !searchQuery.trim()
+    ? filteredDocuments.slice(0, 3)
+    : [];
 
   const startRename = (doc: DocumentDTO) => {
     setRenamingId(doc.id);
@@ -152,12 +179,46 @@ export function DocumentLibrary({
         </div>
       </div>
 
+      {/* Recent Documents Strip */}
+      {!loading && recentDocuments.length > 0 && (
+        <section aria-label="Recent documents" className="space-y-2.5">
+          <div className="flex items-center gap-1.5 text-xs font-medium text-slate-500">
+            <Clock className="w-3.5 h-3.5" />
+            <span>Recent documents</span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            {recentDocuments.map((doc) => (
+              <button
+                key={`recent-${doc.id}`}
+                type="button"
+                onClick={() => onOpenDocument(doc.id)}
+                className="text-left p-4 rounded-xl bg-white border border-slate-200 hover:border-blue-300 hover:bg-slate-50/40 transition-colors cursor-pointer space-y-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <span className="font-display text-sm font-semibold text-slate-900 truncate">
+                    {doc.title}
+                  </span>
+                  <RoleTag doc={doc} />
+                </div>
+                <p className="text-xs text-slate-500 truncate tabular-nums">
+                  {doc.isOwner ? 'Owned by you' : `By ${doc.owner.name}`}
+                  <span aria-hidden="true"> · </span>
+                  {formatRelativeDate(doc.updatedAt)}
+                  <span aria-hidden="true"> · </span>
+                  {doc.wordCount} {doc.wordCount === 1 ? 'word' : 'words'}
+                </p>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
+
       {/* Filter Segmented Control + Live Search */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div
           role="tablist"
           aria-label="Filter documents by ownership"
-          className="inline-flex items-center p-1 rounded-lg bg-slate-100 border border-slate-200/80 self-start"
+          className="inline-flex items-center p-1 rounded-lg bg-slate-100 border border-slate-200/80 self-start overflow-x-auto max-w-full"
         >
           {(
             [
@@ -241,7 +302,7 @@ export function DocumentLibrary({
               {searchQuery.trim()
                 ? 'Try clearing your search filter or switching tabs.'
                 : filter === 'shared'
-                ? 'Switch to another seeded user in the top right and share a document with this account.'
+                ? 'Switch to another demo account in the top right and share a document with this account.'
                 : 'Create a blank document or import an existing .txt, .md, or .docx file to get started.'}
             </p>
             {!searchQuery.trim() && filter !== 'shared' && (
@@ -269,7 +330,9 @@ export function DocumentLibrary({
               <thead>
                 <tr className="border-b border-slate-200 bg-slate-50/70 text-xs font-medium text-slate-500">
                   <th className="py-3 pl-5 pr-4">Document</th>
-                  <th className="py-3 px-4">Ownership &amp; Access</th>
+                  <th className="py-3 px-4 hidden sm:table-cell">
+                    Ownership &amp; Access
+                  </th>
                   <th className="py-3 px-4 hidden md:table-cell">Shared With</th>
                   <th className="py-3 px-4 hidden sm:table-cell">Updated</th>
                   <th className="py-3 pl-4 pr-5 text-right">Actions</th>
@@ -286,8 +349,8 @@ export function DocumentLibrary({
                       key={doc.id}
                       className="hover:bg-slate-50/80 transition-colors"
                     >
-                      {/* Document Title + Quiet Metadata */}
-                      <td className="py-3.5 pl-5 pr-4 min-w-[260px]">
+                      {/* Document Title + Metadata */}
+                      <td className="py-3.5 pl-5 pr-4 min-w-[220px]">
                         {isRenaming ? (
                           <div className="space-y-1">
                             <div className="flex items-center gap-1.5">
@@ -300,7 +363,7 @@ export function DocumentLibrary({
                                 onKeyDown={(e) => {
                                   if (e.key === 'Enter') {
                                     e.preventDefault();
-                                    submitRename(doc.id);
+                                    void submitRename(doc.id);
                                   } else if (e.key === 'Escape') {
                                     cancelRename();
                                   }
@@ -311,7 +374,7 @@ export function DocumentLibrary({
                               <button
                                 type="button"
                                 disabled={savingRename}
-                                onClick={() => submitRename(doc.id)}
+                                onClick={() => void submitRename(doc.id)}
                                 aria-label="Save title"
                                 className="p-1.5 rounded-md bg-blue-600 text-white hover:bg-blue-700 cursor-pointer"
                               >
@@ -353,31 +416,41 @@ export function DocumentLibrary({
                                   </>
                                 )}
                               </p>
+                              {/* Compact mobile summary */}
+                              <div className="sm:hidden flex items-center gap-2 mt-1.5 text-xs text-slate-500">
+                                <RoleTag doc={doc} />
+                                <span>
+                                  {doc.isOwner
+                                    ? 'You'
+                                    : doc.owner.name}
+                                </span>
+                                <span aria-hidden="true">·</span>
+                                <span className="tabular-nums">
+                                  {formatRelativeDate(doc.updatedAt)}
+                                </span>
+                              </div>
                             </div>
                           </div>
                         )}
                       </td>
 
                       {/* Ownership & Access */}
-                      <td className="py-3.5 px-4 text-xs text-slate-600 whitespace-nowrap">
-                        {doc.isOwner ? (
-                          <span className="font-medium text-slate-900">
-                            Owned by you
-                          </span>
-                        ) : (
+                      <td className="py-3.5 px-4 text-xs text-slate-600 whitespace-nowrap hidden sm:table-cell">
+                        <div className="inline-flex items-center gap-2">
+                          <RoleTag doc={doc} />
                           <span>
-                            Shared by{' '}
-                            <strong className="font-medium text-slate-900">
-                              {doc.owner.name}
-                            </strong>
-                            <span aria-hidden="true"> · </span>
-                            <span>
-                              {doc.accessRole === 'editor'
-                                ? 'Can edit'
-                                : 'View only'}
-                            </span>
+                            {doc.isOwner ? (
+                              'Owned by you'
+                            ) : (
+                              <>
+                                Shared by{' '}
+                                <strong className="font-medium text-slate-900">
+                                  {doc.owner.name}
+                                </strong>
+                              </>
+                            )}
                           </span>
-                        )}
+                        </div>
                       </td>
 
                       {/* Collaborators */}

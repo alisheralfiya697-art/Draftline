@@ -13,7 +13,7 @@ export function ProjectNotesView({ onBackToDocuments }: ProjectNotesViewProps) {
             Architecture &amp; AI Workflow Notes
           </h1>
           <p className="text-sm text-slate-500 mt-1">
-            Scope rationale, verification summary, and reviewer guide (also saved in ARCHITECTURE.md, AI_WORKFLOW.md, and WALKTHROUGH_SCRIPT.md).
+            Scope rationale, verification summary, and reviewer guide (also saved in ARCHITECTURE.md, AI_WORKFLOW.md, and SUBMISSION.md).
           </p>
         </div>
         <button
@@ -32,7 +32,7 @@ export function ProjectNotesView({ onBackToDocuments }: ProjectNotesViewProps) {
         </h2>
         <div className="space-y-3 text-sm leading-relaxed text-slate-700">
           <p>
-            <strong>Focused Scope Over Feature Parity:</strong> Draftline deliberately omits real-time operational transformation/CRDT cursors, nested folder trees, comment threads, and external OAuth logins. Instead, it delivers a reliable end-to-end core: creating, renaming, formatting, importing, sharing, and persisting documents.
+            <strong>Focused Scope Over Feature Parity:</strong> Draftline deliberately omits real-time operational transformation/CRDT cursors, nested folder trees, comment threads, and external OAuth providers. Instead, it delivers a reliable end-to-end core: creating, renaming, formatting, importing, sharing, and persisting documents.
           </p>
           <p>
             <strong>Rich-Text Editor (Tiptap / ProseMirror):</strong> Built on Tiptap StarterKit v3 rather than raw browser <code>contentEditable</code> / <code>execCommand</code> so bold, italic, underline, H1–H3 headings, bulleted/numbered lists, and undo/redo produce clean, consistent HTML across browsers.
@@ -41,7 +41,7 @@ export function ProjectNotesView({ onBackToDocuments }: ProjectNotesViewProps) {
             <strong>Server-Side Import &amp; Sanitization:</strong> Uploaded <code>.txt</code>, <code>.md</code>, and <code>.docx</code> files (max 5 MB) are parsed on the Express backend with <code>mammoth</code> and <code>marked</code>, then sanitized with <code>sanitize-html</code> using an allowlist of safe formatting tags before storage.
           </p>
           <p>
-            <strong>Simple Persistence &amp; Seeded Access Control:</strong> Documents and share records persist atomically to <code>data/documents.json</code> using write-temp-and-rename, surviving page refreshes and server restarts without external database setup. Four seeded team accounts can be switched from the header, with every API endpoint enforcing owner, editor, and viewer permissions via <code>X-User-Id</code>.
+            <strong>Transactional SQLite Persistence &amp; Simulated Demo Auth:</strong> Documents and share records persist in SQLite (<code>node:sqlite</code> with WAL mode, foreign keys, and <code>BEGIN IMMEDIATE</code> transactions) under <code>DATA_DIR/draftline.db</code>, eliminating JSON corruption and concurrent write races. Authentication uses an explicit simulated demo login flow (<code>POST /api/auth/demo-login</code>) issuing HMAC-SHA256 signed <code>Authorization: Bearer</code> tokens held strictly in React memory.
           </p>
         </div>
       </section>
@@ -55,10 +55,10 @@ export function ProjectNotesView({ onBackToDocuments }: ProjectNotesViewProps) {
             <strong>Where AI Helped:</strong> AI assisted with scaffolding the Express REST router, Tiptap toolbar wiring, TypeScript DTO contracts, and Vitest + Supertest integration test cases.
           </p>
           <p>
-            <strong>What Was Verified:</strong> Verified Tiptap v3 StarterKit type definitions (confirming <code>Underline</code> is bundled natively in v3 to prevent duplicate extension registration), ran the full Vitest suite testing CRUD, file import parsing, XSS tag stripping, and role-based 403 enforcement, and verified TypeScript compilation plus Vite production bundling.
+            <strong>What Was Verified:</strong> Verified Tiptap v3 StarterKit type definitions, ran the Vitest suite testing SQLite transaction safety, concurrent writes, file import parsing, XSS tag stripping, HMAC token verification, and role-based 403 enforcement, plus verified TypeScript compilation and Vite/esbuild production bundling.
           </p>
           <p>
-            <strong>What Was Changed:</strong> Removed duplicate standalone Tiptap Underline registration after checking package types, moved <code>.docx</code>/<code>.md</code> parsing and HTML sanitization exclusively to the backend trust boundary, and replaced raw browser dialogs with accessible in-app confirmation and sharing modals.
+            <strong>What Was Changed:</strong> Replaced initial header-based <code>X-User-Id</code> user switching with an authenticated demo login flow and server-signed Bearer tokens, upgraded persistence from a flat JSON file to transactional SQLite WAL storage, removed unused template packages/configs, and fixed HTML block-boundary spacing in word counting.
           </p>
         </div>
       </section>
@@ -69,16 +69,16 @@ export function ProjectNotesView({ onBackToDocuments }: ProjectNotesViewProps) {
         </h2>
         <ol className="list-decimal pl-5 space-y-2 text-sm text-slate-700">
           <li>
-            As <strong>Maya Lin</strong>, create a new document, format headings/lists/bold/underline, rename it, and verify the status settles on <strong>Saved</strong>.
+            Sign in as <strong>Maya Lin</strong> on the Demo Sign-In screen, create a new document, format headings/lists/bold/underline, rename it, and verify the status settles on <strong>Saved</strong>.
           </li>
           <li>
-            Refresh the browser page to confirm the document, edits, and active user persist via URL state and server storage.
+            Refresh the browser page and sign back in to confirm the document, edits, and sharing state persisted in SQLite.
           </li>
           <li>
             Click <strong>Import File</strong> to upload a <code>.txt</code>, <code>.md</code>, or <code>.docx</code> file and edit the resulting document.
           </li>
           <li>
-            Click <strong>Share</strong>, grant <strong>Carlos Vega</strong> <em>Can view</em> or <em>Can edit</em> access, then switch to <strong>Carlos Vega</strong> in the top-right switcher and check <strong>Shared with Me</strong>.
+            Click <strong>Share</strong>, grant <strong>Carlos Vega</strong> <em>Can view</em> or <em>Can edit</em> access, then switch demo session to <strong>Carlos Vega</strong> in the top-right menu and open <strong>Shared with Me</strong>.
           </li>
         </ol>
       </section>
