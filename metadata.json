@@ -1,0 +1,6 @@
+{
+  "name": "Draftline",
+  "description": "A focused collaborative rich-text document workspace for creating, importing, editing, and sharing documents.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
