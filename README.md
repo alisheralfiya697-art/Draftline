@@ -94,10 +94,15 @@ npm start       # Runs NODE_ENV=production node server.js on PORT
 - `DELETE /api/documents/:id/shares/:targetUserId` *(auth)* — Revokes collaborator access (owner only)
 
 ## Deployment (with Persistent Storage)
-1. Provision a **Node `>= 22.14.0`** environment.
+1. Provision a **Node `>= 22.14.0`** environment (Render, Railway, Fly.io, Cloud Run).
 2. Mount a persistent writable disk/volume and set `DATA_DIR` to that mount path (e.g., `DATA_DIR=/data`) so `draftline.db` persists across container restarts and deployments.
 3. Set `NODE_ENV=production`, `PORT=3000` (or platform port), and `SESSION_SECRET`.
 4. Build with `npm run build` and start with `npm start`.
+
+### Deploying to Netlify
+Draftline includes `netlify.toml` and `netlify/functions/api.ts` so it can be deployed to Netlify via **Git integration** or **Netlify CLI** (`npx netlify-cli deploy --build --prod`):
+- **Do not** drag-and-drop the raw source `.zip` onto Netlify Drop (`app.netlify.com/drop`)—Netlify Drop only serves pre-built static folders (`dist/`) and does not build source code or run `/api/*` functions, which causes `404` errors.
+- **Note on Netlify Persistence**: Netlify Functions use an ephemeral `/tmp` filesystem, so SQLite state resets on cold starts when hosted on Netlify. For durable persistence across restarts, deploy the Node server (`npm start`) with `DATA_DIR` mounted to a persistent volume, or use the live hosted deployment above.
 
 ## Demo User Accounts
 Select any seeded user on the **Sign in to Draftline** screen (simulated demo auth, no password required):
