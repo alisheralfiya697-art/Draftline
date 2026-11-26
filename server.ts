@@ -14,7 +14,8 @@ async function startServer() {
   const app = createApiApp(store, auth);
 
   const port = Number(process.env.PORT) || 3000;
-  const isProd = process.env.NODE_ENV === 'production';
+  const isProd =
+    process.env.NODE_ENV === 'production' || process.argv.includes('--prod');
 
   if (!isProd) {
     const { createServer: createViteServer } = await import('vite');
