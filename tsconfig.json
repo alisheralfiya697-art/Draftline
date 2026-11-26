@@ -20,6 +20,6 @@
     "allowImportingTsExtensions": true,
     "noEmit": true
   },
-  "include": ["src", "server", "server.ts", "tests", "vite.config.ts", "netlify"],
+  "include": ["src", "server", "server.ts", "tests", "vite.config.ts"],
   "exclude": ["dist", "server.js", "data"]
 }
